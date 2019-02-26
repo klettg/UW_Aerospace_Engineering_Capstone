@@ -4,7 +4,9 @@ unsigned long previousMillisMAVLink = 0;
 unsigned long next_interval_MAVLink = 1000; // interval between heartbeats
 
 void setup() {
-  Serial.begin(57600); // communication with PixHawk
+  Serial1.begin(57600); // communication with PixHawk   19(RX), 18(TX)
+  Serial.begin(9600); // debugging output
+  Serial.println("starting up");
 }
 
 void loop() {
@@ -34,11 +36,11 @@ void loop() {
     // Timing variables
     previousMillisMAVLink = currentMillisMAVLink;
 
-    Serial.write(buf, len);
+    Serial1.write(buf, len);
     Mav_Request_Data();
   }
 
-  com_receive();
+  comm_receive();
 }
 
 void Mav_Request_Data() {
@@ -48,31 +50,35 @@ void Mav_Request_Data() {
   const uint8_t MAVStream = MAV_DATA_STREAM_RAW_SENSORS; // Enables IMU_RAW, GPS_RAW, GPS_STATUS packets. May need to change to MAV_DATA_STREAM_EXTENDED_STATUS
   const uint16_t MAVRate = 0x02; // change?
 
-  mavlink_msg_request_data_stream_pack(2, 200, &msg, sysid, compid, MAVStream, MAVRates, 1); // 2 and 200?
+  mavlink_msg_request_data_stream_pack(2, 200, &msg, 1, 0, MAVStream, MAVRate, 1); // 2 and 200?
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
 
-  Serial.write(buf, len); // request data
+  Serial1.write(buf, len); // request data
 }
 
 void comm_receive() {
   mavlink_message_t msg;
   mavlink_status_t status;
 
-  while (Serial.available() > 0) {
-    uint8_t c = Serial.read();
+  while (Serial1.available() > 0) {
+    uint8_t c = Serial1.read();
 
     // Try to get a new message
     if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-
       // Handle message
       switch (msg.msgid) {
-        case MAVLINK_MSG_ID_GPS_RAW_INT
+        case MAVLINK_MSG_ID_GPS_RAW_INT:
           {
             mavlink_gps_raw_int_t gps;
             mavlink_msg_gps_raw_int_decode(&msg, &gps);
             
             // print gps.time_usec;
+            //Serial1.println(gps.time_usec);
+            
             // print gps.lat;
+            Serial.println("writing");
+            Serial.println(gps.lat);
+            
             // print gps.lon;
           }
           break;
@@ -80,7 +86,7 @@ void comm_receive() {
         default:
           break;   
       }
-    }
+    } 
   }
 }
 

@@ -8,7 +8,7 @@
 
 #define ozoneAddr 0x50 // = 80
 #define coAddr 0x51 // = 81
-#define SD_Check 0 // if not set to 0, will stop program if SD card fails
+#define SD_Check 1 // if not set to 0, will stop program if SD card fails
 #define CS_Pin 10 // pin 10 is chip select line
 
 // software serial for PM2.5 sensor
@@ -52,6 +52,7 @@ void setup() {
       // flash led (insert code here)
       // beep beeper?
       // send fail message to GCS
+      Serial.println("SD error");
     }
 #endif
   }
@@ -288,3 +289,4 @@ void RTC() {
     Serial.println("RTC error");
   }
 }
+

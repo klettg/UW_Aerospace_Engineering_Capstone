@@ -75,14 +75,31 @@ void comm_receive() {
             // print gps.time_usec;
             //Serial1.println(gps.time_usec);
             
-            // print gps.lat;
-            Serial.println("writing");
+            Serial.print("MAVLINK_MSG_ID_GPS_RAW_INT lat:");
             Serial.println(gps.lat);
             
-            // print gps.lon;
+            Serial.print("MAVLINK_MSG_ID_GPS_RAW_INT lon:");
+            Serial.println(gps.lon);
           }
           break;
-          
+        case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
+          {
+            mavlink_global_position_int_t gps33;
+            mavlink_msg_global_position_int_decode(&msg, &gps33);
+
+            Serial.println("-----------GLOBAL_POSITION_INT----------");
+            Serial.print("GLOBAL_POSITION_INT lat:");
+            Serial.println(gps33.lat);
+            Serial.print("GLOBAL_POSITION_INT lon:");
+            Serial.println(gps33.lon);
+            Serial.print("GLOBAL_POSITION_INT alt:");
+            Serial.println(gps33.alt);
+            Serial.print("GLOBAL_POSITION_INT relalt:");
+            Serial.println(gps33.relative_alt);
+            Serial.println("-----------END----------");
+            
+          }
+          break;
         default:
           break;   
       }

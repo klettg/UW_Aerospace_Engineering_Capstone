@@ -1,7 +1,12 @@
-#include </Users/dylanhoff/Documents/School/AerosPACE/mavlink/mavlink.h>
+#include <mavlink.h> // must have mavlink.h in same directory
 
 unsigned long previousMillisMAVLink = 0;
 unsigned long next_interval_MAVLink = 1000; // interval between heartbeats
+
+uint8_t system_id = 2;
+uint8_t component_id = 200;
+uint8_t target_system = 1;
+uint8_t target_component = 0;
 
 void setup() {
   Serial1.begin(57600); // communication with PixHawk   19(RX), 18(TX)
@@ -50,7 +55,7 @@ void Mav_Request_Data() {
   const uint8_t MAVStream = MAV_DATA_STREAM_RAW_SENSORS; // Enables IMU_RAW, GPS_RAW, GPS_STATUS packets. May need to change to MAV_DATA_STREAM_EXTENDED_STATUS
   const uint16_t MAVRate = 0x02; // change?
 
-  mavlink_msg_request_data_stream_pack(2, 200, &msg, 1, 0, MAVStream, MAVRate, 1); // 2 and 200?
+  mavlink_msg_request_data_stream_pack(system_id, component_id, &msg, target_system, target_component, MAVStream, MAVRate, 1); // 2 and 200?
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
 
   Serial1.write(buf, len); // request data

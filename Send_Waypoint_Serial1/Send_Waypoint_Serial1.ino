@@ -1,6 +1,7 @@
 /*
    TODO:
    -implement timeouts per: https://mavlink.io/en/services/mission.html
+   -implement loiter command
 */
 
 
@@ -29,16 +30,19 @@ void setup() {
 void loop() {
   //MISSION_CLEAR();
   //COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_ACK);
-
   SEND_MISSION_COUNT(4); // send count
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
-  SET_WP(0, 0, 0, 0); // set home waypoint
+  WP(0, 0, 0, 0); // set home waypoint
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
-  SET_WP(1, 30, 50, 20);
+  LOITER(1, 1, 30, 0, 47.675379, -121.945517, 70);
+
+  /*
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
-  SET_WP(2, 10, 40, 20);
+  WP(2, 10, 40, 20);
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
-  SET_WP(3, -80, 150, 20);
+  WP(3, -80, 150, 20);
+  */
+  
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_ACK); // listen for acknowledgement
   ACK_PACK();
   
@@ -66,10 +70,10 @@ void SEND_MISSION_COUNT(int count) {
 }
 
 void TAKEOFF(int seq, float alt) {
-  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT; // Set target frame to global default
+  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
   uint16_t command = MAV_CMD_NAV_TAKEOFF;
-  uint8_t current = 0; // indicates a guided mode "go-to" message
-  uint8_t autocontinue = 0; // Always 0
+  uint8_t current = 0;
+  uint8_t autocontinue = 0;
   float param1 = 0; // Loiter time
   float param2 = 0; // Acceptable range from target - radius in meters
   float param3 = 0; // Pass through waypoint
@@ -85,10 +89,10 @@ void TAKEOFF(int seq, float alt) {
 }
 
 // lat:[-90,90] lon:[-180,180]
-void SET_WP(uint16_t seq, float lat, float lon, float alt) {
+void WP(uint16_t seq, float lat, float lon, float alt) {
   uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
   uint16_t command = MAV_CMD_NAV_WAYPOINT;
-  uint8_t current = 0; //2; // indicates a guided mode "go-to" message
+  uint8_t current = 0;
   uint8_t autocontinue = 0;
   float param1 = 0; // Loiter time
   float param2 = 0; // Acceptable range from target - radius in meters
@@ -104,11 +108,28 @@ void SET_WP(uint16_t seq, float lat, float lon, float alt) {
   Serial1.write(buf, len);
 }
 
+// lat:[-90,90] lon:[-180,180]
+// xtrack location: 0 for center of loiter wp, 1 for exit location
+void LOITER(uint16_t seq, uint8_t turns, uint8_t rad, uint8_t xtrack_loc,float lat, float lon, float alt) {
+  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
+  uint16_t command = MAV_CMD_NAV_LOITER_TURNS;
+  uint8_t current = 0;
+  uint8_t autocontinue = 0;
+
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+
+  mavlink_msg_mission_item_pack(system_id, component_id, &msg, target_system, target_component, seq, frame, command, current, autocontinue, turns, 0, rad, xtrack_loc, lat, lon, alt);
+
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  Serial1.write(buf, len);
+}
+
 void RTL(int seq) {
-  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT; // Set target frame to global default
+  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
   uint16_t command = MAV_CMD_NAV_RETURN_TO_LAUNCH;
-  uint8_t current = 0; // indicates a guided mode "go-to" message
-  uint8_t autocontinue = 0; // Always 0
+  uint8_t current = 0;
+  uint8_t autocontinue = 0;
   float param1 = 0; // Loiter time
   float param2 = 0; // Acceptable range from target - radius in meters
   float param3 = 0; // Pass through waypoint
@@ -139,13 +160,10 @@ void COMM_RECEIVE(int desiredID) {
 
   while (Serial1.available() > 0) {
     uint8_t c = Serial1.read();
-
+    
     // Try to get a new message
     if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
       uint8_t receivedID = msg.msgid;
-
-      //Serial.println(receivedID);
-
       //if (receivedID == desiredID) {
       switch (receivedID) {
         case MAVLINK_MSG_ID_HEARTBEAT:
@@ -172,7 +190,7 @@ void COMM_RECEIVE(int desiredID) {
             Serial.println();
           }
           break;
-        case MAVLINK_MSG_ID_MISSION_ACK: //MAVLINK_MSG_ID_MISSION_REQUEST_INT:
+        case MAVLINK_MSG_ID_MISSION_ACK:
           {
             mavlink_mission_ack_t ack;
             mavlink_msg_mission_ack_decode(&msg, &ack);

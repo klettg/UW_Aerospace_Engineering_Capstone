@@ -468,6 +468,21 @@ void Plane::set_mode(enum FlightMode mode, mode_reason_t reason)
         set_guided_WP();
         break;
 
+    //ATMOS START
+    case ATMOS_DATA:
+    case ATMOS_AUTO:
+        auto_throttle_mode = true;
+        auto_navigation_mode = true;
+        guided_throttle_passthru = false;
+        /*
+        when entering guided mode we set the target as the current
+        location. This matches the behaviour of the copter code
+        */
+        guided_WP_loc = current_loc;
+        set_guided_WP();
+        break;
+    //ATMOS END
+            
     case QSTABILIZE:
     case QHOVER:
     case QLOITER:
@@ -691,6 +706,14 @@ void Plane::notify_flight_mode(enum FlightMode mode)
     case GUIDED:
         notify.set_flight_mode_str("GUID");
         break;
+            
+    //ATMOS START
+        case ATMOS_DATA:
+        notify.set_flight_mode_str("ATMSD");
+        case ATMOS_AUTO:
+        notify.set_flight_mode_str("ATMSA");
+    //ATMOS END
+            
     case INITIALISING:
         notify.set_flight_mode_str("INIT");
         break;

@@ -705,6 +705,7 @@ bool Plane::verify_loiter_turns(const AP_Mission::Mission_Command &cmd)
 
     if (result) {
         gcs().send_text(MAV_SEVERITY_INFO,"Loiter orbits complete");
+        // ATMOS: send complete orbit message here?
     }
     return result;
 }

@@ -380,6 +380,17 @@ void Plane::stabilize()
     }
     float speed_scaler = get_speed_scaler();
 
+    //ATMOS START
+    if (control_mode == ATMOS_DATA) {
+        // nothing to do
+        return;
+    }
+    if (control_mode == ATMOS_AUTO) {
+        // nothing to do
+        return;
+    }
+    //ATMOS END
+    
     if (quadplane.in_tailsitter_vtol_transition()) {
         /*
           during transition to vtol in a tailsitter try to raise the

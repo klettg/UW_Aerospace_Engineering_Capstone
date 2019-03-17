@@ -52,7 +52,13 @@ void Plane::failsafe_short_on_event(enum failsafe_state fstype, mode_reason_t re
     case CIRCLE:
     case RTL:
     case QLAND:
-    case QRTL:
+    case QRTL
+    
+    //ATMOS START
+    case ATMOS_DATA:
+    case ATMOS_AUTO:
+    //ATMOS END
+            
     default:
         break;
     }
@@ -113,6 +119,12 @@ void Plane::failsafe_long_on_event(enum failsafe_state fstype, mode_reason_t rea
     case RTL:
     case QLAND:
     case QRTL:
+            
+    //ATMOS START
+    case ATMOS_DATA:
+    case ATMOS_AUTO:
+    //ATMOS AUTO
+            
     default:
         break;
     }

@@ -52,13 +52,18 @@ void Mav_Request_Data() {
   mavlink_message_t msg;
   uint8_t buf[MAVLINK_MAX_PACKET_LEN];
 
-  const uint8_t MAVStream = MAV_DATA_STREAM_RAW_SENSORS; // Enables IMU_RAW, GPS_RAW, GPS_STATUS packets. May need to change to MAV_DATA_STREAM_EXTENDED_STATUS
-  const uint16_t MAVRate = 0x02; // change?
+  //const uint8_t MAVStream = MAV_DATA_STREAM_RAW_SENSORS; // Enables IMU_RAW, GPS_RAW, GPS_STATUS packets. May need to change to MAV_DATA_STREAM_EXTENDED_STATUS
+  //const uint16_t MAVRate = 0x02;
 
-  mavlink_msg_request_data_stream_pack(system_id, component_id, &msg, target_system, target_component, MAVStream, MAVRate, 1); // 2 and 200?
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  const int  maxStreams = 2;
+  const uint8_t MAVStreams[maxStreams] = {MAV_DATA_STREAM_RAW_SENSORS, MAV_DATA_STREAM_EXTENDED_STATUS}; // GPS and SYS_STATUS respectively
+  const uint16_t MAVRates[maxStreams] = {0x02, 0x05};
 
-  Serial1.write(buf, len); // request data
+  for (int i = 0; i < maxStreams; i++) {
+    mavlink_msg_request_data_stream_pack(system_id, component_id, &msg, target_system, target_component, MAVStreams[i], MAVRates[i], 1);
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    Serial1.write(buf, len);
+  }
 }
 
 void comm_receive() {
@@ -71,45 +76,85 @@ void comm_receive() {
     // Try to get a new message
     if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
       // Handle message
-      Serial.println(msg.msgid);
+      //Serial.println(msg.msgid);
       switch (msg.msgid) {
-        case MAVLINK_MSG_ID_GPS_RAW_INT:
+        /*
+          case MAVLINK_MSG_ID_GPS_RAW_INT:
           {
             mavlink_gps_raw_int_t gps;
             mavlink_msg_gps_raw_int_decode(&msg, &gps);
-            
-            // print gps.time_usec;
-            //Serial1.println(gps.time_usec);
-            
+
+            Serial.print("MAVLINK_MSG_ID_GPS_RAW_INT time:");
+
+            uint64_t num = gps.time_usec;
+
+            uint32_t low = num % 0xFFFFFFFF;
+            uint32_t high = (num >> 32) % 0xFFFFFFFF;
+
+            Serial.print(low);
+            Serial.println(high);
+
             Serial.print("MAVLINK_MSG_ID_GPS_RAW_INT lat:");
             Serial.println(gps.lat);
-            
+
             Serial.print("MAVLINK_MSG_ID_GPS_RAW_INT lon:");
             Serial.println(gps.lon);
           }
           break;
+        */
+        // the filtered global position (e.g. fused GPS and accelerometers)
         case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
           {
-            mavlink_global_position_int_t gps33;
-            mavlink_msg_global_position_int_decode(&msg, &gps33);
+            mavlink_global_position_int_t gps;
+            mavlink_msg_global_position_int_decode(&msg, &gps);
 
             Serial.println("-----------GLOBAL_POSITION_INT----------");
             Serial.print("GLOBAL_POSITION_INT lat:");
-            Serial.println(gps33.lat);
+            Serial.println(gps.lat);
             Serial.print("GLOBAL_POSITION_INT lon:");
-            Serial.println(gps33.lon);
-            Serial.print("GLOBAL_POSITION_INT alt:");
-            Serial.println(gps33.alt);
-            Serial.print("GLOBAL_POSITION_INT relalt:");
-            Serial.println(gps33.relative_alt);
+            Serial.println(gps.lon);
             Serial.println("-----------END----------");
-            
+            Serial.println();
+
+          }
+          break;
+        case MAVLINK_MSG_ID_SYSTEM_TIME:
+          {
+            mavlink_system_time_t tim;
+            mavlink_msg_system_time_decode(&msg, &tim);
+
+            uint64_t t_unix = tim.time_unix_usec;
+
+            uint32_t low = t_unix % 0xFFFFFFFF;
+            uint32_t high = (t_unix >> 32) % 0xFFFFFFFF;
+
+            Serial.print("SYSTEM_TIME time:");
+            Serial.print(low);
+            Serial.println(high);
+            Serial.println();
+
           }
           break;
         default:
-          break;   
+          break;
       }
-    } 
+    }
+  }
+}
+
+void print_uint64_t(uint64_t num) {
+
+  char rev[128]; 
+  char *p = rev+1;
+
+  while (num > 0) {
+    *p++ = '0' + ( num % 10);
+    num/= 10;
+  }
+  p--;
+  /*Print the number which is now in reverse*/
+  while (p > rev) {
+    Serial.print(*p--);
   }
 }
 

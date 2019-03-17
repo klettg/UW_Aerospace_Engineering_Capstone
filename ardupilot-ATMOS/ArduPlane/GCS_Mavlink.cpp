@@ -43,6 +43,12 @@ MAV_MODE GCS_MAVLINK_Plane::base_mode() const
     case LOITER:
     case AVOID_ADSB:
     case GUIDED:
+    
+    //ATMOS START
+    case ATMOS_DATA:
+    case ATMOS_AUTO:
+    //ATMOS END
+            
     case CIRCLE:
     case QRTL:
         _base_mode = MAV_MODE_FLAG_GUIDED_ENABLED |
@@ -670,6 +676,30 @@ bool GCS_MAVLINK_Plane::handle_guided_request(AP_Mission::Mission_Command &cmd)
     plane.set_guided_WP();
     return true;
 }
+
+//ATMOS START
+/*
+ handle a request to switch to atmos_auto mode. This happens via a
+ callback from handle_mission_item()
+*/
+bool GCS_MAVLINK_Plane::handle_atmos_auto_request(AP_Mission::Mission_Command &cmd)
+{
+    if (plane.control_mode != ATMOS_AUTO) {
+        // only accept position updates when in ATMOS_AUTO mode
+        return false;
+    }
+    plane.guided_WP_loc = cmd.content.location;
+    
+    // add home alt if needed
+    if (plane.guided_WP_loc.relative_alt) {
+        plane.guided_WP_loc.alt += plane.home.alt;
+        plane.guided_WP_loc.relative_alt = 0;
+    }
+    
+    plane.set_guided_WP();
+    return true;
+}
+//ATMOS END
 
 /*
   handle a request to change current WP altitude. This happens via a
@@ -1429,6 +1459,12 @@ bool GCS_MAVLINK_Plane::set_mode(const uint8_t mode)
     case CRUISE:
     case AVOID_ADSB:
     case GUIDED:
+            
+    //ATMOS START
+    case ATMOS_DATA:
+    case ATMOS_AUTO:
+    //ATMOS END
+            
     case AUTO:
     case RTL:
     case LOITER:

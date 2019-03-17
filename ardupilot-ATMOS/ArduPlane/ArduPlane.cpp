@@ -511,6 +511,18 @@ void Plane::update_flight_mode(void)
         calc_throttle();
         break;
         
+    //ATMOS START
+    case ATMOS_DATA:
+        // same as stabilize
+        nav_roll_cd        = 0;
+        nav_pitch_cd       = 0;
+        // throttle is passthrough
+        break;
+            
+    case ATMOS_AUTO:
+        // same as guided
+    //ATMOS END
+            
     case TRAINING: {
         training_manual_roll = false;
         training_manual_pitch = false;
@@ -754,6 +766,15 @@ void Plane::update_navigation()
     case GUIDED:
         update_loiter(radius);
         break;
+
+    //ATMOS START
+    case ATMOS_DATA:
+    // same as stabilize
+    case ATMOS_AUTO:
+    // same as guided
+        update_loiter(radius);
+        break;
+    //ATMOS END
 
     case CRUISE:
         update_cruise();

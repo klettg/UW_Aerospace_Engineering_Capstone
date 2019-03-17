@@ -68,6 +68,11 @@ enum FlightMode {
     QRTL          = 21,
     QAUTOTUNE     = 22,
     QACRO         = 23,
+    
+    //ATMOS START
+    ATMOS_DATA    = 24, // stabilize but prompts data collection when initiated
+    ATMOS_AUTO    = 25, // propts data collection and accepts waypoints from payload
+    //ATMOS END
 };
 
 enum mode_reason_t {

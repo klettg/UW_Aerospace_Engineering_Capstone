@@ -6,19 +6,10 @@
 
 #include <mavlink.h> // must have mavlink.h in same directory
 
-unsigned long previousMillisMAVLink = 0;
-unsigned long next_interval_MAVLink = 1000; // interval between heartbeats
-
 uint8_t system_id = 255;
 uint8_t component_id = 190;
 uint8_t target_system = 1;
 uint8_t target_component = 1;
-
-int type = MAV_TYPE_FIXED_WING;
-uint8_t autopilot_type = MAV_AUTOPILOT_INVALID; // No valid autopilot, e.g. a GCS or other MAVLink component
-uint8_t system_mode = MAV_MODE_PREFLIGHT; ///< Booting up
-uint32_t custom_mode = 0;                 ///< Custom mode, can be defined by user/adopter
-uint8_t system_state = MAV_STATE_STANDBY; ///< System ready for flight
 
 float curr_lat = 0;
 float curr_lon = 0;
@@ -38,26 +29,21 @@ void setup() {
 }
 
 void loop() {
-  request_data();
-  while (!get_gps_pos()) {
-    // implement timeout
-  }
-
-  //if mode != auto
-  // if first mission item, set location to current location
-  // do this continuously and wait for auto mode
+  update_gps_pos();
+  
   uint32_t mode = get_flight_mode();
   while (mode != AUTO) {
-    request_data();
-    while (!get_gps_pos()) {
-      // implement timeout
-    }
+    update_gps_pos();
     send_next_mission_item(curr_lat, curr_lon, curr_alt);
     if (mode == STABILIZE) {
       //start data collection if not already started
     }
     mode = get_flight_mode();
+    if (mode == 100) {
+      // failsafe
+    }
   }
+
   // we are in auto -> start data collection
 
   // listen for item completed message (finished first orbit)
@@ -68,30 +54,41 @@ void loop() {
   // maybe change autocontinue/current?
   while (get_flight_mode() == AUTO) {
     while (get_reached_item() != 1) { // seq = 1
-      // wait
+      // wait, collect data
     }
     // send next waypoint
   }
+  
   // not in auto -> end data collection
+  
 }
 
 uint32_t get_flight_mode() {
   mavlink_message_t msg;
   mavlink_status_t status;
 
-  while (Serial1.available() > 0) {
-    uint8_t c = Serial1.read();
+  unsigned long curr_time = millis();
 
-    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-      if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-        mavlink_heartbeat_t hbt;
-        mavlink_msg_heartbeat_decode(&msg, &hbt);
-
-        return hbt.custom_mode;
+  while (millis() - curr_time < 3000) {
+    while (Serial1.available() > 0) {
+      uint8_t c = Serial1.read();
+      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+        if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+          mavlink_heartbeat_t hbt;
+          mavlink_msg_heartbeat_decode(&msg, &hbt);
+          return hbt.custom_mode;
+        }
       }
     }
   }
-  return -1; // failed
+  return 100; // failed
+}
+
+void update_gps_pos() {
+  request_data();
+  while (!get_gps_pos()) {
+    // implement timeout
+  }
 }
 
 bool get_gps_pos() {
@@ -112,9 +109,9 @@ bool get_gps_pos() {
         curr_alt = (float) (gps.relative_alt / 1000.0); // mm -> m
 
         // check how the cast rounds
-        Serial.println(gps.lat);
-        Serial.println(curr_lat);
-        
+        //Serial.print("Raw lat: "); Serial.println(gps.lat);
+        //Serial.print("Casted lat: "); Serial.println(curr_lat);
+
         return true;
       }
     }
@@ -138,7 +135,7 @@ uint16_t get_reached_item() {
       }
     }
   }
-  return -1; // failed
+  return 100; // failed
 }
 
 void send_next_mission_item(float lat, float lon, float alt) {
@@ -229,8 +226,14 @@ void request_data() {
   mavlink_message_t msg;
   uint8_t buf[MAVLINK_MAX_PACKET_LEN];
 
-  //const uint8_t MAVStream = MAV_DATA_STREAM_RAW_SENSORS; // Enables IMU_RAW, GPS_RAW, GPS_STATUS packets. May need to change to MAV_DATA_STREAM_EXTENDED_STATUS
-  //const uint16_t MAVRate = 0x02;
+  /*
+    const uint8_t MAVStream = 0;//MAV_DATA_STREAM_RAW_SENSORS; // Enables IMU_RAW, GPS_RAW, GPS_STATUS packets. May need to change to MAV_DATA_STREAM_EXTENDED_STATUS
+    const uint16_t MAVRate = 0x02;
+    const int  maxStreams = 2;
+    mavlink_msg_request_data_stream_pack(system_id, component_id, &msg, target_system, target_component, MAVStream, MAVRate, 1);
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    Serial1.write(buf, len);
+  */
 
   const int  maxStreams = 2;
   const uint8_t MAVStreams[maxStreams] = {MAV_DATA_STREAM_RAW_SENSORS, MAV_DATA_STREAM_EXTENDED_STATUS}; // GPS and SYS_STATUS respectively

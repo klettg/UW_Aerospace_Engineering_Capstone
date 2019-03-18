@@ -171,6 +171,7 @@ void COMM_RECEIVE(int desiredID) {
             mavlink_heartbeat_t hbt;
             mavlink_msg_heartbeat_decode(&msg, &hbt);
 
+            Serial.println("heartbeat");
             //Serial.print("type: ");
             //Serial.println(hbt.type);
           }
@@ -179,7 +180,7 @@ void COMM_RECEIVE(int desiredID) {
           {
             mavlink_mission_request_t request;
             mavlink_msg_mission_request_decode(&msg, &request);
-
+/*
             Serial.println("--------MISSION_REQUEST--------");
             Serial.print("Sequence: ");
             Serial.println(request.seq);
@@ -188,6 +189,7 @@ void COMM_RECEIVE(int desiredID) {
             Serial.print("Target Component: ");
             Serial.println(request.target_component);
             Serial.println();
+            */
           }
           break;
         case MAVLINK_MSG_ID_MISSION_ACK:

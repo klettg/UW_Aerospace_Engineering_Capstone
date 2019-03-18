@@ -102,6 +102,13 @@ void comm_receive() {
           }
           break;
         */
+        case MAVLINK_MSG_ID_HEARTBEAT:
+          {
+
+            Serial.println("heartbeat");
+
+          }
+          break;
         // the filtered global position (e.g. fused GPS and accelerometers)
         case MAVLINK_MSG_ID_GLOBAL_POSITION_INT:
           {
@@ -131,8 +138,9 @@ void comm_receive() {
             Serial.print("SYSTEM_TIME time:");
             Serial.print(low);
             Serial.println(high);
+            Serial.print("SYTEM_TIME since last boot:");
+            Serial.println(tim.time_boot_ms);
             Serial.println();
-
           }
           break;
         default:
@@ -141,20 +149,3 @@ void comm_receive() {
     }
   }
 }
-
-void print_uint64_t(uint64_t num) {
-
-  char rev[128]; 
-  char *p = rev+1;
-
-  while (num > 0) {
-    *p++ = '0' + ( num % 10);
-    num/= 10;
-  }
-  p--;
-  /*Print the number which is now in reverse*/
-  while (p > rev) {
-    Serial.print(*p--);
-  }
-}
-

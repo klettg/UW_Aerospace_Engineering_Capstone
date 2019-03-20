@@ -6,11 +6,6 @@
 #include <SPI.h>
 #include "RTClib.h"
 
-#define ozoneAddr 0x50 // = 80
-#define coAddr 0x51 // = 81
-#define SD_Check 1 // if not set to 0, will stop program if SD card fails
-#define CS_Pin 10 // pin 10 is chip select line
-
 // software serial for PM2.5 sensor
 // receives to pin 2, transmits from pin 3
 SoftwareSerial pmsSerial(2, 3); // TODO: change to real serial
@@ -166,7 +161,6 @@ void ozone_sensing() {
   } else {
     // send error message
   }
-
 }
 
 // reads carbon monoxide levels from sensor in parts per million (ppm) and prints the data

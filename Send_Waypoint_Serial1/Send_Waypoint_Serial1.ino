@@ -30,12 +30,12 @@ void setup() {
 void loop() {
   //MISSION_CLEAR();
   //COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_ACK);
-  SEND_MISSION_COUNT(4); // send count
+  SEND_MISSION_COUNT(2); // send count
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
   WP(0, 0, 0, 0); // set home waypoint
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
-  LOITER(1, 1, 30, 0, 47.675379, -121.945517, 70);
-
+  //LOITER(1, 1, 30, 0, 47.675379, -121.945517, 70);
+  LOITER(1, 1, 30, 0, 47.6649208068, 100, 70);
   /*
   COMM_RECEIVE(MAVLINK_MSG_ID_MISSION_REQUEST); // listen for request
   WP(2, 10, 40, 20);

@@ -10,9 +10,12 @@
     -implement beeper messages
     -verify serial2 works in place of software serial
     -improve calculate_score() -> email WSDE
+    -verify math in calculate_next_mission()
+    -split into classes
 */
 
 #include <mavlink.h> // must have mavlink.h in same directory
+#include <math.h>
 #include <Wire.h>
 #include <SD.h>
 #include <SPI.h>
@@ -32,13 +35,18 @@
 #define CO_address 0x51 // = 81
 #define CS_pin 10 // pin 10 is chip select line
 
-#define curr_points_length 100
+#define orbit_points_size 300
+#define data_wait_time 5000 // time to wait between data points (ms)
 
 bool auto_mode = false;
 
 float curr_lat = 0;
 float curr_lon = 0;
 float curr_alt = 0;
+
+float curr_wp_lat = 0;
+float curr_wp_lon = 0;
+float curr_wp_alt = 0;
 
 File file; // file object to store data
 char filename[] = "DATA00.CSV"; // name of file to create and write to
@@ -60,8 +68,8 @@ typedef struct {
   float lon;
 } score_point;
 
-score_point curr_points[curr_points_length];
-uint8_t points_index = 0;
+score_point orbit_points[orbit_points_size];
+uint8_t orbit_index = 0;
 
 void setup() {
   Serial.begin(115200); // debugging output
@@ -99,18 +107,26 @@ void setup() {
 void loop() {
   update_gps_pos();
   uint32_t mode = get_flight_mode();
+  
   while (mode != AUTO) {
     update_gps_pos();
+    send_mission(curr_lat, curr_lon, curr_alt);
 
-    send_next_mission_item(curr_lat, curr_lon, curr_alt);
-    if (mode == STABILIZE) {
-      //start data collection if not already started
+    unsigned long prev_time = millis();    
+    while (mode == STABILIZE) { // collect data if in stabilize
+      // collect data
+      if (millis() - prev_time >= data_wait_time) {
+        rec_data_point();
+        prev_time = millis();
+      }
+      // continue sending wp's in case we go from stabilize to auto
+      update_gps_pos();
+      send_mission(curr_lat, curr_lon, curr_alt);
     }
     mode = get_flight_mode();
   }
-  
+
   auto_mode = true;
-  // we are in auto -> start data collection
 
   // listen for item completed message (finished first orbit)
   // we are assumming that the plane sends the loiter item when it
@@ -119,18 +135,19 @@ void loop() {
   // on to the timed "waiting" loiter
   // maybe change autocontinue/current?
   while (get_flight_mode() == AUTO) {
-    unsigned long curr_time = millis();
+    unsigned long prev_time = millis();
     while (get_reached_item() != 1) { // seq = 1
       // wait, collect data
-      // implement failsafe
+      if (millis() - prev_time >= data_wait_time) {
+        rec_data_point();
+        prev_time = millis();
+      }
     }
-    // send next waypoint
-    // clear_score_points
+    // orbit completed
+    calculate_next_mission();
   }
-
+  
   auto_mode = false;
-  // not in auto -> end data collection
-
 }
 
 uint32_t get_flight_mode() {
@@ -256,7 +273,11 @@ uint16_t get_reached_item() {
   return 100; // failed
 }
 
-void send_next_mission_item(float lat, float lon, float alt) {
+void send_mission(float lat, float lon, float alt) {
+  curr_wp_lat = lat;
+  curr_wp_lon = lon;
+  curr_wp_alt = alt;
+
   send_mission_count(3);
   comm_receive(); // request
   send_waypoint(0, 0, 0, 0); // home waypoint
@@ -386,25 +407,57 @@ void send_acknowledgment() {
 void rec_data_point() {
   file = SD.open(filename, FILE_WRITE); // open file for writing
   file.print(get_time());
-  if (record_PM) {
-    update_gps_pos();
-    write_gps();
-    record_ozone();
-    record_CO();
 
-    if (auto_mode) {
-      record_score_point();
+  unsigned long curr_time = millis();
+  while (millis() - curr_time < 10000) { // timeout
+    // wait for successful PM reading
+    if (!read_PM_data(&Serial2)) {
+      update_gps_pos();
+      write_gps();
+      record_PM();
+      record_ozone();
+      record_CO();
+
+      if (auto_mode) {
+        record_score_point();
+      }
     }
   }
+  
   file.println();
-  file.close();
+  file.close(); // close file to save
 }
 
-void send_next_waypoint() {
-  for (uint8_t i = 0; i < points_index; i++) {
-    // calculate
+void calculate_next_mission() {
+  // point to determine direction
+  double dir_x = 0;
+  double dir_y = 0;
+  for (uint8_t i = 0; i < orbit_index; i++) {
+    score_point point = orbit_points[i];
+    double lat_offset = (double)(point.lat - curr_wp_lat);
+    double lon_offset = (double)(point.lon - curr_wp_lon);
+    double theta = atan2(lat_offset, lon_offset);
+    if (lon_offset >= 0) { // quadrant I and IV check atan(1/0))
+      dir_x += point.score * cos(theta);
+      dir_y += point.score * sin(theta);
+    } else { // quadrant II and III
+      dir_x += point.score * -cos(theta);
+      dir_y += point.score * -sin(theta);
+    }
   }
-  points_index = 0; // reset array
+  orbit_index = 0; // reset array
+
+  double new_lat;
+  double new_lon;
+  double phi = atan2(dir_y, dir_x); // phi = direction of worst air quality
+  if (dir_x >= 0) { // quadrant I and IV
+    new_lat = curr_wp_lat + loiter_radius * sin(phi);
+    new_lon = curr_wp_lon + loiter_radius * cos(phi);
+  } else { // quadrant II and III
+    new_lat = curr_wp_lat + loiter_radius * -sin(phi);
+    new_lon = curr_wp_lon + loiter_radius * -cos(phi);
+  }
+  send_mission(new_lat, new_lon, curr_wp_alt); // update position, maintain same altitude
 }
 
 void record_score_point() {
@@ -413,9 +466,11 @@ void record_score_point() {
   point.lat = curr_lat;
   point.lon = curr_lon;
 
-  if (points_index < curr_points_length) {
-    curr_points[points_index] = point;
-    points_index++;
+  if (orbit_index < orbit_points_size) {
+    orbit_points[orbit_index] = point;
+    orbit_index++;
+  } else {
+    // send message that full
   }
 }
 
@@ -430,37 +485,27 @@ void write_gps() {
   file.print(curr_alt); file.print(',');
 }
 
-bool record_PM() {
-  unsigned long curr_time = millis();
-  while (millis() - curr_time < 10000) {
-    while (!read_PM_data(&Serial2)) {
-      // wait for successful PM reading
-    }
-    // PM data updated, print
-    Serial.println("---------------------------------------");
-    Serial.println("Concentration Units (standard)");
-    Serial.print("PM 1.0: "); Serial.print(PM_data.pm10_standard); file.print(PM_data.pm10_standard); file.print(',');
-    Serial.print("\t\tPM 2.5: "); Serial.print(PM_data.pm25_standard); file.print(PM_data.pm25_standard); file.print(',');
-    Serial.print("\t\tPM 10: "); Serial.println(PM_data.pm100_standard); file.print(PM_data.pm100_standard); file.print(',');
-    Serial.println("---------------------------------------");
-    Serial.println("Concentration Units (environmental)");
-    Serial.print("PM 1.0: "); Serial.print(PM_data.pm10_env); file.print(PM_data.pm10_env); file.print(',');
-    Serial.print("\t\tPM 2.5: "); Serial.print(PM_data.pm25_env); file.print(PM_data.pm25_env); file.print(',');
-    Serial.print("\t\tPM 10: "); Serial.println(PM_data.pm100_env); file.print(PM_data.pm100_env); file.print(',');
-    Serial.println("---------------------------------------");
-    Serial.print("Particles > 0.3um / 0.1L air:"); Serial.println(PM_data.particles_03um); file.print(PM_data.particles_03um); file.print(',');
-    Serial.print("Particles > 0.5um / 0.1L air:"); Serial.println(PM_data.particles_05um); file.print(PM_data.particles_05um); file.print(',');
-    Serial.print("Particles > 1.0um / 0.1L air:"); Serial.println(PM_data.particles_10um); file.print(PM_data.particles_10um); file.print(',');
-    Serial.print("Particles > 2.5um / 0.1L air:"); Serial.println(PM_data.particles_25um); file.print(PM_data.particles_25um); file.print(',');
-    Serial.print("Particles > 5.0um / 0.1L air:"); Serial.println(PM_data.particles_50um); file.print(PM_data.particles_50um); file.print(',');
-    Serial.print("Particles > 10.0 um / 0.1L air:"); Serial.println(PM_data.particles_100um); file.print(PM_data.particles_100um); file.print(',');
-    Serial.println("---------------------------------------");
-    Serial.println();
-
-    return true;
-  }
-  return false;
-  // FAILSAFE
+void record_PM() {
+  // PM data updated, print
+  Serial.println("---------------------------------------");
+  Serial.println("Concentration Units (standard)");
+  Serial.print("PM 1.0: "); Serial.print(PM_data.pm10_standard); file.print(PM_data.pm10_standard); file.print(',');
+  Serial.print("\t\tPM 2.5: "); Serial.print(PM_data.pm25_standard); file.print(PM_data.pm25_standard); file.print(',');
+  Serial.print("\t\tPM 10: "); Serial.println(PM_data.pm100_standard); file.print(PM_data.pm100_standard); file.print(',');
+  Serial.println("---------------------------------------");
+  Serial.println("Concentration Units (environmental)");
+  Serial.print("PM 1.0: "); Serial.print(PM_data.pm10_env); file.print(PM_data.pm10_env); file.print(',');
+  Serial.print("\t\tPM 2.5: "); Serial.print(PM_data.pm25_env); file.print(PM_data.pm25_env); file.print(',');
+  Serial.print("\t\tPM 10: "); Serial.println(PM_data.pm100_env); file.print(PM_data.pm100_env); file.print(',');
+  Serial.println("---------------------------------------");
+  Serial.print("Particles > 0.3um / 0.1L air:"); Serial.println(PM_data.particles_03um); file.print(PM_data.particles_03um); file.print(',');
+  Serial.print("Particles > 0.5um / 0.1L air:"); Serial.println(PM_data.particles_05um); file.print(PM_data.particles_05um); file.print(',');
+  Serial.print("Particles > 1.0um / 0.1L air:"); Serial.println(PM_data.particles_10um); file.print(PM_data.particles_10um); file.print(',');
+  Serial.print("Particles > 2.5um / 0.1L air:"); Serial.println(PM_data.particles_25um); file.print(PM_data.particles_25um); file.print(',');
+  Serial.print("Particles > 5.0um / 0.1L air:"); Serial.println(PM_data.particles_50um); file.print(PM_data.particles_50um); file.print(',');
+  Serial.print("Particles > 10.0 um / 0.1L air:"); Serial.println(PM_data.particles_100um); file.print(PM_data.particles_100um); file.print(',');
+  Serial.println("---------------------------------------");
+  Serial.println();
 }
 
 void record_ozone() {

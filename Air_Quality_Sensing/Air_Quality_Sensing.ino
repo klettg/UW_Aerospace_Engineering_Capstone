@@ -6,9 +6,13 @@
 #include <SPI.h>
 #include "RTClib.h"
 
+#define ozoneAddr 0x50 // = 80
+#define coAddr 0x51 // = 81
+#define CS_Pin 10 // pin 10 is chip select line
+
 // software serial for PM2.5 sensor
 // receives to pin 2, transmits from pin 3
-SoftwareSerial pmsSerial(2, 3); // TODO: change to real serial
+SoftwareSerial pmsSerial(10, 11); // TODO: change to real serial
 
 RTC_PCF8523 rtc; // real time clock (RTC) object
 bool RTC_found; // represents if the RTC has been found
@@ -22,6 +26,8 @@ void setup() {
 
   // begin communication with PM 2.5 sensor at baud rate 9600
   pmsSerial.begin(9600);
+  //Serial2.begin(9600); // communication with PM2.5 sensor [16(RX), 17(TX)]
+
 
   // begin I2C communication
   // for use with ozone and CO sensors and RTC
@@ -92,6 +98,7 @@ struct pms5003data PMdata;
 void loop() {
 // prints all data only if data from the PM 2.5 sensor is successfully read
   if (readPMSdata(&pmsSerial)) {
+  //if (readPMSdata(&Serial2)) {
     data = SD.open(filename, FILE_WRITE); // open file for writing
     data.print(" ");
 
@@ -191,10 +198,11 @@ void CO_sensing() {
 }
 
 
-// takes in a stream representing the PM 2.5 serial commmunication
+//// takes in a stream representing the PM 2.5 serial commmunication
 // reads a set of PM 2.5 data and returns true if successful, false otherwise
 boolean readPMSdata(Stream *s) {
   // exit if no bytes are available for reading
+  //Serial.println(s->available());
   if (! s->available()) {
     return false;
   }

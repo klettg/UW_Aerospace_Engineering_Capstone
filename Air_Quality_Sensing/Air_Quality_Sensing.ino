@@ -12,7 +12,7 @@
 
 // software serial for PM2.5 sensor
 // receives to pin 2, transmits from pin 3
-SoftwareSerial pmsSerial(10, 11); // TODO: change to real serial
+SoftwareSerial pmsSerial(11, 2); // TODO: change to real serial
 
 RTC_PCF8523 rtc; // real time clock (RTC) object
 bool RTC_found; // represents if the RTC has been found
@@ -21,6 +21,15 @@ File data; // file object to store data
 char filename[] = "DATA00.CSV"; // name of file to create and write to
 
 void setup() {
+  pinMode(2, OUTPUT);
+  analogWrite(2, 50);
+  delay(100);
+  analogWrite(2, 0);
+  delay(100);
+  analogWrite(2, 50);
+  delay(100);
+  analogWrite(2, 0);
+  
   // debugging output to IDE at baud rate 115200
   Serial.begin(115200);
 

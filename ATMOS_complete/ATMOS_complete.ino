@@ -1,19 +1,17 @@
 /*
     TODO:
     -are autocontinue and current set correctly? (check sequence)
-    -verify update_gps_pos() -> verify altitude readings
-    
-    -test timeouts by checking realistic times
-    -functionality testing -> make written test plan for base and edge cases
+    -verify altitude readings match with mission planner
+    -test payload interference
 
-    -integrate failsafe_message()
+    -test timeouts by checking realistic times
+    -functionality testing -> make written test plan for base and edge cases. test with HIL
+
     -verify math in calculate_next_mission()
-    -communication with GCS? <- test this
-    -implement protocol for maximum score points reached in add_score_point(). update after every point?
     -auto speed?
-    -remove failsafe from get_flight_mode?
+    -reset direction point?
     -reorganize
-    -convert system time from unix in get_time() (RTClib?) or implement usage of the RTC instead
+    -implement usage of the RTC instead of gps. convert from unix?
 */
 
 #include <mavlink.h> // must have mavlink.h in same directory
@@ -31,7 +29,6 @@
 #define STABILIZE 2 // data collection mode. flys normally but collects data during flight
 #define TRAINING 3 // recovery mode. continues payload operation after halted
 #define AUTO 10 // autonomous mode. collects data and uses it to determine future waypoints
-#define RTL 11 // failsafe mode when in auto
 
 #define system_id 255
 #define component_id 190
@@ -43,10 +40,9 @@
 #define CS_pin 10 // chip select line
 #define beeper_pin 2
 
-#define orbit_points_size 256 // if increased past 256 orbit_index must be changed to type uint16_t
 #define data_wait_time 5000 // time to wait between data points (ms)
 
-bool auto_mode = false;
+uint32_t flight_mode;
 
 float curr_lat = 0;
 float curr_lon = 0;
@@ -56,7 +52,7 @@ float curr_wp_lat = 0;
 float curr_wp_lon = 0;
 float curr_wp_alt = 0;
 
-// point to determine direction
+// point to determine next waypoint direction to be evaluated
 double dir_x = 0;
 double dir_y = 0;
 
@@ -82,9 +78,6 @@ typedef struct {
   float lon;
 } score_point;
 
-score_point orbit_points[orbit_points_size];
-uint8_t orbit_index = 0;
-
 void setup() {
   Serial.begin(115200); // debugging output
   Serial.println("starting up");
@@ -94,6 +87,16 @@ void setup() {
   Serial1.begin(57600); // communication with PixHawk [19(RX), 18(TX)]
   pmsSerial.begin(9600); // communication with PM sensor
   Wire.begin(); // I2C communication with ozone and CO sensors
+
+  unsigned long curr_time = millis();
+  while (update_flight_mode() == NULL) {
+    if (millis() - curr_time > 5000) {
+      Serial.println("ERROR: no hearbeat packets received. ending execution");
+      while (1) {
+        beep(1, 100);
+      }
+    }
+  }
 
   // set up SD card
   pinMode(CS_pin, OUTPUT);
@@ -121,41 +124,39 @@ void setup() {
   // write data header
   // SCU = standard concentration units, ECU = environmental concentration units
   file = SD.open(filename, FILE_WRITE);
-  file.println("Date, Time, latitude, longitude, altitude (m), SCU PM 1.0, SCU PM 2.5, SCU PM 10, ECU PM 1.0, ECU PM 2.5, ECU PM 10, 0.3um, 0.5um, 1.0um, 2.5um, 5.0um, 10.0um, Ozone ppm, CO ppm, Auto Mode");
+  file.println("Date, Time, latitude, longitude, altitude (m), SCU PM 1.0, SCU PM 2.5, SCU PM 10, ECU PM 1.0, ECU PM 2.5, ECU PM 10, 0.3um, 0.5um, 1.0um, 2.5um, 5.0um, 10.0um, Ozone ppm, CO ppm, Flight Mode");
   file.close();
 
   // FOR TESTING. DELETE AFTER TESTING
   /*
-  send_mission(0, 0, 1); // set something you can walk to
-  while (1) {
+    send_mission(0, 0, 1); // set something you can walk to
+    while (1) {
     Serial.print("reached item: "); Serial.println(get_reached_item()); // should read 1 at completion of orbit
-  }
+    }
   */
-
-while(1) {
-  auto_mode = true;
-  failsafe(); // beep if in stabilize. beep and change to RTL if in auto. from comm receive should get req, req, ack
-  Serial.println();
-}
+  while(1) {
+    unsigned long curr = millis();
+    update_gps_pos();
+    Serial.print("update_gps_pos() time: "); Serial.println(millis() - curr);
+  }
+  comm_receive_timeout_test();
+  // insert rec data point test
   // END TESTING
 }
 
 void loop() {
-  uint32_t mode = get_flight_mode();
   unsigned long prev_time = millis() - data_wait_time;
-  while (mode != AUTO) {
-    if (mode == MANUAL) { // manual = safe mode. stop payload interaction fully
+  while (update_flight_mode != AUTO) {
+    if (flight_mode == MANUAL) { // manual = safe mode. stop payload interaction fully
       halt();
     }
-    if (mode == STABILIZE && millis() - prev_time >= data_wait_time) { // collect data if in stabilize
+    if (flight_mode == STABILIZE && millis() - prev_time >= data_wait_time) { // collect data if in stabilize
       rec_data_point();
       prev_time = millis();
     }
     update_gps_pos();
     send_mission(curr_lat, curr_lon, curr_alt);
-    mode = get_flight_mode();
   }
-  auto_mode = true;
 
   // listen for item completed message (finished first orbit)
   // we are assumming that the plane sends the loiter item when it
@@ -163,85 +164,145 @@ void loop() {
   // which case we want to check for seq = 2, meaning it has moved
   // on to the timed "waiting" loiter
   // maybe change autocontinue/current?
-  while (get_flight_mode() == AUTO) {
-    prev_time = millis();
+  while (update_flight_mode() == AUTO) {
+    // new orbit is beginning. reset direction point
+    dir_x = 0;
+    dir_y = 0;
+
+    prev_time = millis() - data_wait_time;
     while (get_reached_item() != 1) { // seq = 1
       // wait, collect data
       if (millis() - prev_time >= data_wait_time) {
         rec_data_point();
         prev_time = millis();
       }
-      if (get_flight_mode() != AUTO) { // if taken out of auto mid orbit, clear orbit points
-        orbit_index = 0;
+      if (update_flight_mode() != AUTO) { // if taken out of auto mid orbit, exit
         break;
       }
     }
-    // orbit completed
-    if (orbit_index > 0) { // only calculate next mission if there is something to calculate it from
+    // mission completed
+    if (flight_mode == AUTO) { // only calculate next mission if still in auto mode
       calculate_next_mission();
     }
   }
-  auto_mode = false;
 }
 
-// sends mission to return to launch. sends message telling what went wrong
-void failsafe() {
-  beep(5, 100);
+// FOR TESTING. DELETE AFTER
+void comm_receive_timeout_test() {
+  send_mission_count(3);
+  unsigned long curr = millis();
+  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
+  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST) time: "); Serial.println(millis() - curr);
+
+  send_waypoint(0, 0, 0, 0);
+  curr = millis();
+  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
+  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST) time: "); Serial.println(millis() - curr);
   
-    send_mission_count(2);
-    bool received = false;
-    for (uint8_t i = 1; i <= 5; i++) {
-      if (comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST)) {
-        // success
-        received = true;
-        break;
-      } else {
-        // failed, retry maximum 5 times
-        send_mission_count(2);
-      }
-    }
-    if (!received) {
-      Serial.println("failsafe() failed. halting program execution");
-      halt();
-    }
+  return_to_launch(1);
+  curr = millis();
+  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
+  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST) time: "); Serial.println(millis() - curr);
+  
+  failsafe_message(2, ID);
+  curr = millis();
+  comm_receive(MAVLINK_MSG_ID_MISSION_ACK);
+  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_ACK) time: "); Serial.println(millis() - curr);
+  
+  send_acknowledgment();
+}
 
-    send_waypoint(0, 0, 0, 0);
-    received = false;
-    for (uint8_t i = 1; i <= 5; i++) {
-      if (comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST)) {
-        // success
-        received = true;
-        break;
-      } else {
-        // failed, retry maximum 5 times
-        send_waypoint(0, 0, 0, 0);
-      }
-    }
-    if (!received) {
-      Serial.println("failsafe() failed. halting program execution");
-      halt();
-    }
+// tells aircraft to return to launch. sends message telling what went wrong
+void failsafe(float ID) {
+  beep(5, 100);
 
-    return_to_launch(1);
-    received = false;
-    for (uint8_t i = 1; i <= 5; i++) {
-      if (comm_receive(MAVLINK_MSG_ID_MISSION_ACK)) {
-        // success
-        received = true;
-        break;
-      } else {
-        // failed, retry maximum 5 times
-        return_to_launch(1);
-      }
+  send_mission_count(3);
+  bool received = false;
+  for (uint8_t i = 1; i <= 5; i++) {
+    if (comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST)) {
+      // success
+      received = true;
+      break;
+    } else {
+      // failed, retry maximum 5 times
+      send_mission_count(3);
     }
-    if (!received) {
-      Serial.println("failsafe() failed. halting program execution");
-      halt();
+  }
+  if (!received) {
+    Serial.println("failsafe() failed. halting program execution");
+    halt();
+  }
+
+  send_waypoint(0, 0, 0, 0);
+  received = false;
+  for (uint8_t i = 1; i <= 5; i++) {
+    if (comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST)) {
+      // success
+      received = true;
+      break;
+    } else {
+      // failed, retry maximum 5 times
+      send_waypoint(0, 0, 0, 0);
     }
+  }
+  if (!received) {
+    Serial.println("failsafe() failed. halting program execution");
+    halt();
+  }
 
-    send_acknowledgment();
+  return_to_launch(1);
+  received = false;
+  for (uint8_t i = 1; i <= 5; i++) {
+    if (comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST)) {
+      // success
+      received = true;
+      break;
+    } else {
+      // failed, retry maximum 5 times
+      return_to_launch(1);
+    }
+  }
+  if (!received) {
+    Serial.println("failsafe() failed. halting program execution");
+    halt();
+  }
 
-    //failsafe message
+  failsafe_message(2, ID);
+  received = false;
+  for (uint8_t i = 1; i <= 5; i++) {
+    if (comm_receive(MAVLINK_MSG_ID_MISSION_ACK)) {
+      // success
+      received = true;
+      break;
+    } else {
+      // failed, retry maximum 5 times
+      failsafe_message(2, ID);
+    }
+  }
+  if (!received) {
+    Serial.println("failsafe() failed. halting program execution");
+    halt();
+  }
+
+  send_acknowledgment();
+}
+
+void failsafe_message(uint16_t seq, float ID) {
+  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
+  uint16_t command = 208; // =MAV_CMD_DO_PARACHUTE;
+  uint8_t current = 0;
+  uint8_t autocontinue = 0;
+  float param2 = 0;
+  float param3 = 0;
+  float param4 = 0;
+
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+
+  mavlink_msg_mission_item_pack(system_id, component_id, &msg, target_system, target_component, seq, frame, command, current, autocontinue, ID, param2, param3, param4, curr_lat, curr_lon, curr_alt);
+
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  Serial1.write(buf, len);
 }
 
 void return_to_launch(uint16_t seq) {
@@ -259,38 +320,6 @@ void return_to_launch(uint16_t seq) {
   Serial1.write(buf, len);
 }
 
-
-// this works. sends mission consisiting of single item: DO_PARACHUTE with param1
-// as the label for Enable. change param1 to method parameter and develop a key to 
-// determine what the failsafe is due to.
-void test_failsafe_message() {
-  send_mission_count(2);
-  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  send_waypoint(0, 0, 0, 0);
-  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-
-  uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
-  uint16_t command = 208; // =MAV_CMD_DO_PARACHUTE;
-  uint8_t current = 0;
-  uint8_t autocontinue = 0;
-  float param1 = 999; // value displayed to GCS
-  float param2 = 0;
-  float param3 = 0;
-  float param4 = 0;
-
-  mavlink_message_t msg;
-  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-
-  mavlink_msg_mission_item_pack(system_id, component_id, &msg, target_system, target_component, 1, frame, command, current, autocontinue, param1, param2, param3, param4, curr_lat, curr_lon, curr_alt);
-
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-  Serial1.write(buf, len);
-
-  comm_receive(MAVLINK_MSG_ID_MISSION_ACK);
-  send_acknowledgment();
-}
-
-
 void beep(uint8_t count, uint8_t interval) {
   for (uint8_t i = 1; i <= count; i++) {
     analogWrite(beeper_pin, 50);
@@ -300,26 +329,21 @@ void beep(uint8_t count, uint8_t interval) {
   }
 }
 
-uint32_t get_flight_mode() {
+uint32_t update_flight_mode() {
   mavlink_message_t msg;
   mavlink_status_t status;
 
-  unsigned long curr_time = millis();
-  while (millis() - curr_time < 2000) {
-    while (Serial1.available() > 0) {
-      uint8_t c = Serial1.read();
-      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-        if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-          mavlink_heartbeat_t hbt;
-          mavlink_msg_heartbeat_decode(&msg, &hbt);
-          return hbt.custom_mode;
-        }
+  while (Serial1.available() > 0) {
+    uint8_t c = Serial1.read();
+    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+      if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) { // if heartbeat received, update mode
+        mavlink_heartbeat_t hbt;
+        mavlink_msg_heartbeat_decode(&msg, &hbt);
+        flight_mode = hbt.custom_mode;
       }
     }
   }
-  Serial.println("get_flight_mode() failsafe");
-  //failsafe();
-  return 100; // failed
+  return flight_mode;
 }
 
 void update_gps_pos() {
@@ -339,12 +363,8 @@ void update_gps_pos() {
 
           curr_lat = (float) (gps.lat * pow(10.0, -7.0));
           curr_lon = (float) (gps.lon * pow(10.0, -7.0));
+          
           curr_alt = (float) (gps.relative_alt / 1000.0); // mm -> m
-
-          // TESTS. DELETE AFTER TESTING
-          // check how the cast rounds
-          Serial.print("Raw lat: "); Serial.println(gps.lat);
-          Serial.print("Casted lat: "); Serial.println(curr_lat, 6);
           // check alt
           Serial.print("Relative alt: "); Serial.println(curr_alt);
 
@@ -354,8 +374,42 @@ void update_gps_pos() {
     }
   }
   Serial.println("update_gps_pos() failed. entering failsafe");
-  failsafe();
+  failsafe(1);
 }
+
+/*
+void update_alt() {
+  request_data(MAV_DATA_STREAM_POSITION);
+
+  mavlink_message_t msg;
+  mavlink_status_t status;
+
+  unsigned long curr_time = millis();
+  while (millis() - curr_time < 1500) {
+    while (Serial1.available() > 0) {
+      uint8_t c = Serial1.read();
+      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+        if (msg.msgid ==  141) { // = MAVLINK_MSG_ID_ALTITUDE
+          mavlink_altitude_t alt;
+          mavlink_msg_altitude_decode(&msg, &alt);
+
+          Serial.print("monotonoc alt: "); Serial.println(alt.altitude_monotonic);
+          Serial.print("altitude_amsl: "); Serial.println(alt.altitude_amsl);
+          Serial.print("altitude_local: "); Serial.println(alt.altitude_local);
+          Serial.print("altitude_relative: "); Serial.println(alt.altitude_relative);
+          Serial.print("altitude_terrain: "); Serial.println(alt.altitude_terrain);
+
+          curr_alt = alt.altitude_monotonic;
+
+          return;
+        }
+      }
+    }
+  }
+  Serial.println("update_alt() failed. entering failsafe");
+  failsafe(3);
+}
+*/
 
 uint32_t get_time() {
   request_data(MAV_DATA_STREAM_EXTENDED_STATUS);
@@ -400,7 +454,7 @@ uint32_t get_time() {
 /*
   // converts unix time to a string representing the current time in ISO 8601
   String unix_convert(uint64_t unix_time) {
- 
+
   uint64_t yr = 1970 + unix_time/31556926;
   uint64_t yr_remainder = unix_time%31556926;
   uint64_t mnth = 1 + yr_remainder/2629743;
@@ -415,7 +469,7 @@ uint32_t get_time() {
   return (uint32_t)yr + '-' + (uint32_t)mnth + '-' + (uint32_t)dy + 'T' + (uint32_t)hr + ':' + (uint32_t)mnt + ':' + (uint32_t)sec;
 
 
-}
+  }
 */
 
 void request_data(uint8_t stream) {
@@ -467,7 +521,7 @@ void send_mission(float lat, float lon, float alt) {
   }
   if (!received) {
     Serial.println("send_mission() failed. enter failsafe");
-    failsafe();
+    failsafe(2);
   }
 
   send_waypoint(0, 0, 0, 0); // home waypoint
@@ -484,7 +538,7 @@ void send_mission(float lat, float lon, float alt) {
   }
   if (!received) {
     Serial.println("send_mission() failed. entering failsafe");
-    failsafe();
+    failsafe(2);
   }
 
   send_loiter_turns(1, lat, lon, alt); // data collection waypoint
@@ -501,7 +555,7 @@ void send_mission(float lat, float lon, float alt) {
   }
   if (!received) {
     Serial.println("send_mission() failed. entering failsafe");
-    failsafe();
+    failsafe(2);
   }
 
   send_loiter_time(2, lat, lon, alt); // waiting waypoint
@@ -518,7 +572,7 @@ void send_mission(float lat, float lon, float alt) {
   }
   if (!received) {
     Serial.println("send_mission() failed. entering failsafe");
-    failsafe();
+    failsafe(2);
   }
 
   send_acknowledgment();
@@ -526,7 +580,7 @@ void send_mission(float lat, float lon, float alt) {
 
 void halt() {
   Serial.println("halting");
-  while (get_flight_mode() != TRAINING) { // training is recovery mode. put into training to continue payload operation
+  while (update_flight_mode() != TRAINING) { // training is recovery mode. put into training to continue payload operation
     beep(1, 3000);
   }
   Serial.println("continuing from halt");
@@ -660,7 +714,7 @@ void rec_data_point() {
   Serial.println("recording data point");
 
   file = SD.open(filename, FILE_WRITE); // open file for writing
-  file.print(get_time());
+  file.print(get_time()); file.print(',');
 
   bool success = false;
   unsigned long curr_time = millis();
@@ -674,14 +728,20 @@ void rec_data_point() {
       record_ozone();
       record_CO();
 
-      if (auto_mode) {
-        add_score_point();
+      // if in auto mode, use data point to update direction point
+      if (flight_mode == AUTO) {
+        score_point scr_point;
+        scr_point.score = calculate_score();
+        scr_point.lat = curr_lat;
+        scr_point.lon = curr_lon;
+
+        update_direction_point(scr_point);
       }
     }
   }
 
   if (success) {
-    file.print(auto_mode); file.print(',');
+    file.print(flight_mode); file.print(',');
   } else {
     Serial.println("rec_data_point() failed due to failed PM reading");
     file.print("failed data point"); file.print(',');
@@ -691,9 +751,21 @@ void rec_data_point() {
   file.close(); // close file to save
 }
 
-void calculate_next_mission() {
-  update_direction_point(); // update direction point with remaining score point elements
+// uses given score point to update the direction point
+void update_direction_point(score_point scr_point) {
+  double lat_offset = (double)(scr_point.lat - curr_wp_lat);
+  double lon_offset = (double)(scr_point.lon - curr_wp_lon);
+  double theta = atan2(lat_offset, lon_offset);
+  if (lon_offset >= 0) { // quadrants I and IV
+    dir_x += scr_point.score * cos(theta);
+    dir_y += scr_point.score * sin(theta);
+  } else { // quadrants II and III
+    dir_x += scr_point.score * -cos(theta);
+    dir_y += scr_point.score * -sin(theta);
+  }
+}
 
+void calculate_next_mission() {
   double new_lat;
   double new_lon;
   double phi = atan2(dir_y, dir_x); // phi angle from x axis to direction of worst air quality
@@ -704,44 +776,7 @@ void calculate_next_mission() {
     new_lat = curr_wp_lat + 2 * loiter_radius * -sin(phi);
     new_lon = curr_wp_lon + 2 * loiter_radius * -cos(phi);
   }
-  // clear direction point in preparation for next mission calculation
-  dir_x = 0;
-  dir_y = 0;
-
   send_mission(new_lat, new_lon, curr_wp_alt); // update position, maintain same altitude
-}
-
-// uses current orbit score points to update the direction point. we no longer need these score points -> reset array
-void update_direction_point() {
-  for (uint8_t i = 0; i < orbit_index; i++) {
-    score_point point = orbit_points[i];
-    double lat_offset = (double)(point.lat - curr_wp_lat);
-    double lon_offset = (double)(point.lon - curr_wp_lon);
-    double theta = atan2(lat_offset, lon_offset);
-    if (lon_offset >= 0) { // quadrants I and IV
-      dir_x += point.score * cos(theta);
-      dir_y += point.score * sin(theta);
-    } else { // quadrants II and III
-      dir_x += point.score * -cos(theta);
-      dir_y += point.score * -sin(theta);
-    }
-  }
-  orbit_index = 0; // reset array
-}
-
-void add_score_point() {
-  score_point point;
-  point.score = calculate_score();
-  point.lat = curr_lat;
-  point.lon = curr_lon;
-
-  // if orbit point array is full, update the score point using its elements and reset it before overwriting
-  if (orbit_index >= orbit_points_size) {
-    update_direction_point();
-  }
-
-  orbit_points[orbit_index] = point;
-  orbit_index++;
 }
 
 // change in order to influence the data used in the mission calculation algorithm

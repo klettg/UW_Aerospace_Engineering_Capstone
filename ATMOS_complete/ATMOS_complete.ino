@@ -20,8 +20,8 @@
 #include <SPI.h>
 #include <SoftwareSerial.h>
 
-#define loiter_radius 30 // radius at which to loiter (meters)
-#define loiter_tolerance 5 // tolerance of aircraft distance to loiter radius (meters)
+#define loiter_radius 5 //30 // radius at which to loiter (meters)
+#define loiter_tolerance 1 //5// tolerance of aircraft distance to loiter radius (meters)
 #define loiter_time 5 // time to loiter while waiting for next waypoint (seconds)
 
 // see defines.h
@@ -42,7 +42,7 @@
 
 #define data_wait_time 5000 // time to wait between data points (ms)
 
-uint32_t flight_mode;
+uint32_t flight_mode = 99;
 
 float curr_lat = 0;
 float curr_lon = 0;
@@ -89,14 +89,14 @@ void setup() {
   Wire.begin(); // I2C communication with ozone and CO sensors
 
   unsigned long curr_time = millis();
-  while (update_flight_mode() == NULL) {
+  while (update_flight_mode() == 99) {
     if (millis() - curr_time > 5000) {
       Serial.println("ERROR: no hearbeat packets received. ending execution");
       while (1) {
         beep(1, 100);
       }
     }
-  }
+  } 
 
   // set up SD card
   pinMode(CS_pin, OUTPUT);
@@ -127,6 +127,10 @@ void setup() {
   file.println("Date, Time, latitude, longitude, altitude (m), SCU PM 1.0, SCU PM 2.5, SCU PM 10, ECU PM 1.0, ECU PM 2.5, ECU PM 10, 0.3um, 0.5um, 1.0um, 2.5um, 5.0um, 10.0um, Ozone ppm, CO ppm, Flight Mode");
   file.close();
 
+  while(1) {
+    get_reached_item();
+  }
+
   // FOR TESTING. DELETE AFTER TESTING
   /*
     send_mission(0, 0, 1); // set something you can walk to
@@ -134,32 +138,44 @@ void setup() {
     Serial.print("reached item: "); Serial.println(get_reached_item()); // should read 1 at completion of orbit
     }
   */
+  /*
   while(1) {
     unsigned long curr = millis();
     update_gps_pos();
     Serial.print("update_gps_pos() completion time: "); Serial.println(millis() - curr);
   }
+  */
+  /*
   while(1) {
+    // CHANGE TO PLOTTABLE
     comm_receive_timeout_test();
   }
+  */
+  /*
   while(1) {
+    // CHANGE TO PLOTTABLE
     unsigned long curr = millis();
     rec_data_point();
     Serial.print("rec_data_point() completion time: "); Serial.println(millis() - curr);
   }
+  */
   // END TESTING
 }
 
 void loop() {
   unsigned long prev_time = millis() - data_wait_time;
   while (update_flight_mode() != AUTO) {
+
+    // DEBUGGING
+    //Serial.print("flight mode: "); Serial.println(update_flight_mode());
+    
     update_gps_pos();
     send_mission(curr_lat, curr_lon, curr_alt);
     if (flight_mode == MANUAL) { // manual = safe mode. stop payload interaction fully
       halt();
     }
     if (flight_mode == STABILIZE && millis() - prev_time >= data_wait_time) { // collect data if in stabilize
-      rec_data_point();
+      //rec_data_point();
       prev_time = millis();
     }
   }
@@ -184,7 +200,7 @@ void loop() {
         // implement timeout here
       }
       if (millis() - prev_time >= data_wait_time) {
-        rec_data_point();
+        //rec_data_point();
         prev_time = millis();
       }
       if (update_flight_mode() != AUTO) { // if taken out of auto mid orbit, exit
@@ -203,22 +219,22 @@ void comm_receive_timeout_test() {
   send_mission_count(3);
   unsigned long curr = millis();
   comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST) time: "); Serial.println(millis() - curr);
+  Serial.println(millis() - curr);
 
   send_waypoint(0, 0, 0, 0);
   curr = millis();
   comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST) time: "); Serial.println(millis() - curr);
+  Serial.println(millis() - curr);
   
   return_to_launch(1);
   curr = millis();
   comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST) time: "); Serial.println(millis() - curr);
+  Serial.println(millis() - curr);
   
-  failsafe_message(2, ID);
+  failsafe_message(2, 99);
   curr = millis();
   comm_receive(MAVLINK_MSG_ID_MISSION_ACK);
-  Serial.print("comm_receive(MAVLINK_MSG_ID_MISSION_ACK) time: "); Serial.println(millis() - curr);
+  Serial.println(millis() - curr);
   
   send_acknowledgment();
 }
@@ -228,6 +244,7 @@ void rec_data_point() {
   Serial.println("recording data point");
 
   file = SD.open(filename, FILE_WRITE); // open file for writing
+  file.print("DATE"); file.print(',');
   file.print(get_time()); file.print(',');
 
   bool success = false;
@@ -268,7 +285,7 @@ void rec_data_point() {
 }
 
 bool within_orbit_rad() {
-  float dist = sqrt((curr_wp_lat - curr_lat)^2 + (curr_wp_lon -  curr_lon)^2);
+  float dist = sqrt(pow(curr_wp_lat - curr_lat, 2) + pow(curr_wp_lon -  curr_lon, 2));
   return dist - loiter_tolerance <= loiter_radius;
 }
 
@@ -520,7 +537,7 @@ void send_waypoint(uint16_t seq, float lat, float lon, float alt) {
   uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
   uint16_t command = MAV_CMD_NAV_WAYPOINT;
   uint8_t current = 0;
-  uint8_t autocontinue = 0;
+  uint8_t autocontinue = 1;
   float param1 = 0; // Loiter time
   float param2 = 0; // Acceptable range from target - radius in meters
   float param3 = 0; // Pass through waypoint
@@ -544,7 +561,7 @@ void send_loiter_turns(uint16_t seq, float lat, float lon, float alt) {
   uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
   uint16_t command = MAV_CMD_NAV_LOITER_TURNS;
   uint8_t current = 0;
-  uint8_t autocontinue = 0;
+  uint8_t autocontinue = 1;
   uint8_t turns = 1;
   uint8_t rad = loiter_radius;
   uint8_t xtrack_loc = 0;
@@ -567,7 +584,7 @@ void send_loiter_time(uint16_t seq, float lat, float lon, float alt) {
   uint8_t frame = MAV_FRAME_GLOBAL_RELATIVE_ALT;
   uint16_t command = MAV_CMD_NAV_LOITER_TIME;
   uint8_t current = 0;
-  uint8_t autocontinue = 0;
+  uint8_t autocontinue = 1;
   uint8_t tim = loiter_time;
   uint8_t rad = loiter_radius;
   uint8_t xtrack_loc = 0;
@@ -598,7 +615,7 @@ bool comm_receive(uint8_t desired_ID) {
                 mavlink_mission_request_t request;
                 mavlink_msg_mission_request_decode(&msg, &request);
 
-                Serial.println("MISSION_REQUEST sequence: "); Serial.println(request.seq);
+                //Serial.println("MISSION_REQUEST sequence: "); Serial.println(request.seq);
 
                 return true;
               }
@@ -608,7 +625,7 @@ bool comm_receive(uint8_t desired_ID) {
                 mavlink_mission_ack_t ack;
                 mavlink_msg_mission_ack_decode(&msg, &ack);
 
-                Serial.println("MISSION ACK type: "); Serial.println(ack.type);
+                //Serial.println("MISSION ACK type: "); Serial.println(ack.type);
 
                 return true;
               }
@@ -647,6 +664,8 @@ uint32_t update_flight_mode() {
   mavlink_message_t msg;
   mavlink_status_t status;
 
+  unsigned long curr_time = millis();
+  while (millis() - curr_time < 1500) {
   while (Serial1.available() > 0) {
     uint8_t c = Serial1.read();
     if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
@@ -654,8 +673,11 @@ uint32_t update_flight_mode() {
         mavlink_heartbeat_t hbt;
         mavlink_msg_heartbeat_decode(&msg, &hbt);
         flight_mode = hbt.custom_mode;
+        
+        return flight_mode;
       }
     }
+  }
   }
   return flight_mode;
 }
@@ -668,6 +690,9 @@ uint16_t get_reached_item() {
   while (Serial1.available() > 0) {
     uint8_t c = Serial1.read();
     if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+      
+      //mSerial.println(msg.msgid);
+      
       if (msg.msgid == MAVLINK_MSG_ID_MISSION_ITEM_REACHED) {
         mavlink_mission_item_reached_t item;
         mavlink_msg_mission_item_reached_decode(&msg, &item);
@@ -688,7 +713,7 @@ void update_gps_pos() {
   mavlink_status_t status;
 
   unsigned long curr_time = millis();
-  while (millis() - curr_time < 1500) {
+  while (millis() - curr_time < 3000) {
     while (Serial1.available() > 0) {
       uint8_t c = Serial1.read();
       if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
@@ -701,7 +726,7 @@ void update_gps_pos() {
           
           curr_alt = (float) (gps.relative_alt / 1000.0); // mm -> m
           // check alt
-          Serial.print("Relative alt: "); Serial.println(curr_alt);
+          //Serial.print("Relative alt: "); Serial.println(curr_alt);
 
           return;
         }
@@ -709,7 +734,7 @@ void update_gps_pos() {
     }
   }
   Serial.println("update_gps_pos() failed. entering failsafe");
-  failsafe(1);
+  //failsafe(1);
 }
 
 uint32_t get_time() {
@@ -735,12 +760,12 @@ uint32_t get_time() {
 
           //Serial.print("readable time:");
           //Serial.print(unix_convert(tim.time_unix_usec));
-          Serial.print("SYSTEM_TIME time:");
-          Serial.print(low);
-          Serial.println(high);
-          Serial.print("SYTEM_TIME since last boot:");
-          Serial.println(tim.time_boot_ms);
-          Serial.println();
+          //Serial.print("SYSTEM_TIME time:");
+          //Serial.print(low);
+          //Serial.println(high);
+          //Serial.print("SYTEM_TIME since last boot:");
+          //Serial.println(tim.time_boot_ms);
+          //Serial.println();
 
           return 1;
           // END REPLACE

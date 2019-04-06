@@ -1,13 +1,8 @@
 /*
     TODO:
-    -are autocontinue and current set correctly? (check sequence)
-    -try adding another loiter wait time
     -verify altitude readings match with mission planner
     -test payload interference
-    -test timeouts by checking realistic times
-    -limit filename to 100
 
-    -implement within_orbit_rad() timeout
     -implement update_flight_mode() timeout
     -auto speed?
     -implement usage of the RTC instead of gps
@@ -26,7 +21,7 @@
 
 #define loiter_radius 5 //30 // radius at which to loiter (meters)
 #define loiter_tolerance 1 //5// tolerance of aircraft distance to loiter radius (meters)
-#define loiter_time 60 // time to loiter while waiting for next waypoint (seconds)
+#define loiter_time 30 // time to loiter while waiting for next waypoint (seconds)
 
 // see defines.h
 #define MANUAL 0 // safe mode. stops payload operation
@@ -96,7 +91,7 @@ void setup() {
   Serial1.begin(57600); // communication with PixHawk [19(RX), 18(TX)]
   pmsSerial.begin(9600); // communication with PM sensor
   Wire.begin(); // I2C communication with ozone and CO sensors
-
+ 
   unsigned long curr_time = millis();
   while (update_flight_mode() == 99) {
     if (millis() - curr_time > 5000) {
@@ -186,20 +181,13 @@ void loop() {
     dir_x = 0;
     dir_y = 0;
 
-    /*
-      while (!within_orbit_rad()) {
-        // wait for aircraft to reach orbit
-        // implement timeout here
-      }
-    */
-
     Serial.println("starting orbit");
 
     prev_time = millis() - data_wait_time;
     while (!orbit_completed) {
       // collect data, wait for orbit completion
       
-      if (millis() - prev_time >= data_wait_time) {
+      if (within_orbit_rad() && millis() - prev_time >= data_wait_time) {
         rec_data_point();
         prev_time = millis();
       }
@@ -209,10 +197,13 @@ void loop() {
       }
       get_reached_item();
     }
+    beep(1, 100);
     // mission completed
     if (flight_mode == AUTO) { // only calculate next mission if still in auto mode
       Serial.println("orbit completed");
       calculate_next_mission();
+      set_mission_current();
+      beep(3, 100);
     }
     update_flight_mode();
   }
@@ -325,7 +316,6 @@ void calculate_next_mission() {
     new_lon = curr_wp_lon + 2 * loiter_radius/(111111*cos(curr_wp_lat*(pi/180))) * -cos(phi);
   }
   send_mission(new_lat, new_lon, curr_wp_alt); // update position, maintain same altitude
-  beep(3, 100);
 }
 
 boolean read_PM_data(Stream *s) {
@@ -464,6 +454,15 @@ void write_gps() {
   file.print(curr_alt); file.print(',');
 }
 
+void set_mission_current() {
+  mavlink_message_t msg;
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  uint16_t seq = 1;
+  mavlink_msg_mission_set_current_pack(system_id, component_id, &msg, target_system, target_component, seq);
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  Serial1.write(buf, len);
+}
+
 /*
   timeouts implemented per https://mavlink.io/en/services/mission.html
  */
@@ -472,7 +471,7 @@ void send_mission(float lat, float lon, float alt) {
   curr_wp_lon = lon;
   curr_wp_alt = alt;
 
-  send_mission_count(4);
+  send_mission_count(3);
   bool received = false;
   for (uint8_t i = 1; i <= 5; i++) {
     if (receive_req()) {
@@ -481,7 +480,7 @@ void send_mission(float lat, float lon, float alt) {
       break;
     } else {
       // failed, retry maximum 5 times
-      send_mission_count(4);
+      send_mission_count(3);
     }
   }
   if (!received) {
@@ -533,23 +532,6 @@ void send_mission(float lat, float lon, float alt) {
     } else {
       // failed, retry maximum 5 times
       send_loiter_time(2, lat, lon, alt);
-    }
-  }
-  if (!received) {
-    Serial.println("send_mission() failed. entering failsafe");
-    failsafe(2);
-  }
-
-  send_loiter_time(3, lat, lon, alt); // waiting waypoint 2
-  received = false;
-  for (uint8_t i = 1; i <= 5; i++) {
-    if (receive_ack()) {
-      // success
-      received = true;
-      break;
-    } else {
-      // failed, retry maximum 5 times
-      send_loiter_time(3, lat, lon, alt);
     }
   }
   if (!received) {

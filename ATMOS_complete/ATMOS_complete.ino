@@ -1,8 +1,3 @@
-/*
-    TODO:
-    -test payload interference
-*/
-
 #include <mavlink.h> // must have mavlink.h in same directory
 #include <math.h>
 #include <Wire.h>
@@ -13,7 +8,7 @@
 
 #define print_data_to_console 0 // 0 to supress data printing to console
 
-#define loiter_radius 10 //30 // radius at which to loiter (meters)
+#define loiter_radius 2500 // radius at which to loiter (meters)
 #define loiter_tolerance 5 // tolerance of aircraft distance to loiter radius (meters)
 #define loiter_time 30 // time to loiter while waiting for next waypoint (seconds)
 

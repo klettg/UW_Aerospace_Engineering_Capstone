@@ -1,11 +1,6 @@
 /*
     TODO:
-    -verify altitude readings match with mission planner
     -test payload interference
-
-    -implement update_flight_mode() timeout
-    -auto speed?
-    -implement usage of the RTC instead of gps
 */
 
 #include <mavlink.h> // must have mavlink.h in same directory
@@ -14,13 +9,12 @@
 #include <SD.h>
 #include <SPI.h>
 #include <SoftwareSerial.h>
-
-#define autocontinue 0
+#include "RTClib.h"
 
 #define print_data_to_console 0 // 0 to supress data printing to console
 
-#define loiter_radius 5 //30 // radius at which to loiter (meters)
-#define loiter_tolerance 1 //5// tolerance of aircraft distance to loiter radius (meters)
+#define loiter_radius 10 //30 // radius at which to loiter (meters)
+#define loiter_tolerance 5 // tolerance of aircraft distance to loiter radius (meters)
 #define loiter_time 30 // time to loiter while waiting for next waypoint (seconds)
 
 // see defines.h
@@ -33,6 +27,7 @@
 #define component_id 190
 #define target_system 1
 #define target_component 1
+#define autocontinue 0
 
 #define ozone_address 0x50 // = 80
 #define CO_address 0x51 // = 81
@@ -46,13 +41,13 @@
 
 uint32_t flight_mode = 99;
 
-float curr_lat = 0;
-float curr_lon = 0;
-float curr_alt = 0;
+double curr_lat = 0;
+double curr_lon = 0;
+double curr_alt = 0;
 
-float curr_wp_lat = 0;
-float curr_wp_lon = 0;
-float curr_wp_alt = 0;
+double curr_wp_lat = 0;
+double curr_wp_lon = 0;
+double curr_wp_alt = 0;
 
 bool orbit_completed = false;
 
@@ -62,6 +57,9 @@ double dir_y = 0;
 
 File file; // file object to store data
 char filename[] = "DATA00.CSV"; // name of file to create and write to
+
+RTC_PCF8523 rtc; // real time clock (RTC) object
+bool RTC_found;
 
 SoftwareSerial pmsSerial(11, 10); // serial communication for PM sensor [11(RX), 10(TX)]
 
@@ -78,8 +76,8 @@ struct pms5003data PM_data;
 
 typedef struct {
   uint16_t score;
-  float lat;
-  float lon;
+  double lat;
+  double lon;
 } score_point;
 
 void setup() {
@@ -100,7 +98,16 @@ void setup() {
         beep(1, 100);
       }
     }
-  } 
+  }
+
+  // connect to RTC and check connection
+  if (rtc.begin()) {
+    RTC_found = true;
+  } else { 
+    RTC_found = false;
+    Serial.println("RTC not found");
+    beep(3, 1000);
+  }
 
   // set up SD card
   pinMode(CS_pin, OUTPUT);
@@ -130,30 +137,6 @@ void setup() {
   file = SD.open(filename, FILE_WRITE);
   file.println("Date, Time, latitude, longitude, altitude (m), SCU PM 1.0, SCU PM 2.5, SCU PM 10, ECU PM 1.0, ECU PM 2.5, ECU PM 10, 0.3um, 0.5um, 1.0um, 2.5um, 5.0um, 10.0um, Ozone ppm, CO ppm, Flight Mode");
   file.close();
-
-  // FOR TESTING. DELETE AFTER TESTING
-  /*
-  while(1) {
-    unsigned long curr = millis();
-    update_gps_pos();
-    Serial.print("update_gps_pos() completion time: "); Serial.println(millis() - curr);
-  }
-  */
-  /*
-  while(1) {
-    // CHANGE TO PLOTTABLE
-    comm_receive_timeout_test();
-  }
-  */
-  /*
-  while(1) {
-    // CHANGE TO PLOTTABLE
-    unsigned long curr = millis();
-    rec_data_point();
-    Serial.print("rec_data_point() completion time: "); Serial.println(millis() - curr);
-  }
-  */
-  // END TESTING
 }
 
 void loop() {
@@ -192,53 +175,28 @@ void loop() {
         prev_time = millis();
       }
       update_flight_mode();
-      if (flight_mode != AUTO) { // if taken out of auto mid orbit, exit
+      if (flight_mode != AUTO) { 
+        // if taken out of auto mid orbit, exit
         break;
       }
       get_reached_item();
     }
-    beep(1, 100);
+    beep(3, 100);
     // mission completed
     if (flight_mode == AUTO) { // only calculate next mission if still in auto mode
       Serial.println("orbit completed");
       calculate_next_mission();
       set_mission_current();
-      beep(3, 100);
     }
     update_flight_mode();
   }
 }
 
-// FOR TESTING. DELETE AFTER
-void comm_receive_timeout_test() {
-  send_mission_count(3);
-  unsigned long curr = millis();
-  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  Serial.println(millis() - curr);
-
-  send_waypoint(0, 0, 0, 0);
-  curr = millis();
-  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  Serial.println(millis() - curr);
-  
-  return_to_launch(1);
-  curr = millis();
-  comm_receive(MAVLINK_MSG_ID_MISSION_REQUEST);
-  Serial.println(millis() - curr);
-  
-  failsafe_message(2, 99);
-  curr = millis();
-  comm_receive(MAVLINK_MSG_ID_MISSION_ACK);
-  Serial.println(millis() - curr);
-  
-  send_acknowledgment();
-}
-// END FOR TESTING
-
 void rec_data_point() {
   file = SD.open(filename, FILE_WRITE); // open file for writing
-  file.print("DATE"); file.print(',');
-  file.print(get_time()); file.print(',');
+  file.print(' ');
+  
+  write_date_time();
 
   bool success = false;
   unsigned long curr_time = millis();
@@ -263,8 +221,10 @@ void rec_data_point() {
 
         update_direction_point(scr_point);
       }
-
-      Serial.println("data point recorded");
+      
+      if(!print_data_to_console) {
+        Serial.println("data point recorded");
+      }
       
       break;
     }
@@ -280,8 +240,8 @@ void rec_data_point() {
 }
 
 bool within_orbit_rad() {
-  float dist = sqrt(pow(curr_wp_lat - curr_lat, 2) + pow(curr_wp_lon -  curr_lon, 2));
-  return dist - loiter_tolerance <= loiter_radius;
+  double dist = sqrt(pow((curr_wp_lat - curr_lat)*111111, 2) + pow((curr_wp_lon -  curr_lon)*111111*cos(curr_wp_lat*(pi/180)), 2));
+  return dist <= loiter_radius + loiter_tolerance;
 }
 
 /*
@@ -292,29 +252,27 @@ uint16_t calculate_score() {
 }
 
 void update_direction_point(score_point scr_point) {
-  double lat_offset = (double)(scr_point.lat - curr_wp_lat);
-  double lon_offset = (double)(scr_point.lon - curr_wp_lon);
+  double lat_offset = (scr_point.lat - curr_wp_lat);
+  double lon_offset = (scr_point.lon - curr_wp_lon);
   double theta = atan2(lat_offset, lon_offset);
+  
   if (lon_offset >= 0) { // quadrants I and IV
     dir_x += scr_point.score * cos(theta);
     dir_y += scr_point.score * sin(theta);
   } else { // quadrants II and III
-    dir_x += scr_point.score * -cos(theta);
-    dir_y += scr_point.score * -sin(theta);
+    dir_x += scr_point.score * -cos(theta + pi);
+    dir_y += scr_point.score * -sin(theta + pi);
   }
 }
 
 void calculate_next_mission() {
   double new_lat;
   double new_lon;
-  double phi = atan2(dir_y, dir_x); // phi angle from x axis to direction of worst air quality
-  if (dir_x >= 0) { // quadrants I and IV
-    new_lat = curr_wp_lat + 2 * loiter_radius/111111 * sin(phi);
-    new_lon = curr_wp_lon + 2 * loiter_radius/(111111*cos(curr_wp_lat*(pi/180))) * cos(phi);
-  } else { // quadrants II and III
-    new_lat = curr_wp_lat + 2 * loiter_radius/111111 * -sin(phi);
-    new_lon = curr_wp_lon + 2 * loiter_radius/(111111*cos(curr_wp_lat*(pi/180))) * -cos(phi);
-  }
+  double phi = atan2(dir_y, dir_x); // phi = angle from x axis to direction of worst air quality
+  
+  new_lat = curr_wp_lat + 2 * loiter_radius/111111.0 * sin(phi);
+  new_lon = curr_wp_lon + 2 * loiter_radius/(111111*cos(curr_wp_lat*(pi/180))) * cos(phi);
+  
   send_mission(new_lat, new_lon, curr_wp_alt); // update position, maintain same altitude
 }
 
@@ -448,9 +406,48 @@ void record_CO() {
   }
 }
 
+void write_date_time() {
+  if (RTC_found) {
+    DateTime now = rtc.now();
+
+    file.print(now.year(), DEC);
+    file.print('/');
+    file.print(now.month(), DEC);
+    file.print('/');
+    file.print(now.day(), DEC);
+    file.print(',');
+
+    file.print(now.hour(), DEC);
+    file.print(':');
+    file.print(now.minute(), DEC);
+    file.print(':');
+    file.print(now.second(), DEC);
+    file.print(',');
+
+    if (print_data_to_console) {
+      Serial.print(now.year(), DEC);
+      Serial.print('/');
+      Serial.print(now.month(), DEC);
+      Serial.print('/');
+      Serial.print(now.day(), DEC);
+      Serial.print(' ');
+
+      Serial.print(now.hour(), DEC);
+      Serial.print(':');
+      Serial.print(now.minute(), DEC);
+      Serial.print(':');
+      Serial.print(now.second(), DEC);
+      Serial.println();
+    }
+  } else {
+    file.print("error"); file.print(',');
+    file.print("error"); file.print(',');
+  }
+}
+
 void write_gps() {
-  file.print(curr_lat); file.print(',');
-  file.print(curr_lon); file.print(',');
+  file.print(curr_lat, 6); file.print(',');
+  file.print(curr_lon, 6); file.print(',');
   file.print(curr_alt); file.print(',');
 }
 
@@ -466,7 +463,7 @@ void set_mission_current() {
 /*
   timeouts implemented per https://mavlink.io/en/services/mission.html
  */
-void send_mission(float lat, float lon, float alt) {
+void send_mission(double lat, double lon, double alt) {
   curr_wp_lat = lat;
   curr_wp_lon = lon;
   curr_wp_alt = alt;
@@ -667,11 +664,11 @@ bool comm_receive(uint8_t desired_ID) {
               mavlink_global_position_int_t gps;
               mavlink_msg_global_position_int_decode(&msg, &gps);
 
-              curr_lat = (float) (gps.lat * pow(10.0, -7.0));
-              curr_lon = (float) (gps.lon * pow(10.0, -7.0));
-              curr_alt = (float) (gps.relative_alt / 1000.0); // mm -> m
+              curr_lat = (gps.lat * pow(10.0, -7.0));
+              curr_lon = (gps.lon * pow(10.0, -7.0));
+              curr_alt = (gps.relative_alt / 1000.0); // mm -> m
 
-              //Serial.print("Relative alt: "); Serial.println(curr_alt);
+              // Serial.print("Relative alt: "); Serial.println(curr_alt);
 
               if (desired_ID == MAVLINK_MSG_ID_GLOBAL_POSITION_INT) {
                 return true;
@@ -711,14 +708,30 @@ bool comm_receive(uint8_t desired_ID) {
 
               //Serial.print("Completed sequence: "); Serial.println(item.seq);
 
+              if (item.seq == 1) {
+                orbit_completed = true;
+              }
+
               if (desired_ID == MAVLINK_MSG_ID_MISSION_ITEM_REACHED) {
-                if (item.seq == 1) {
-                  orbit_completed = true;
-                }
                 return true;
               }
             }
             break;
+           case MAVLINK_MSG_ID_MISSION_CURRENT: // get current item
+            {
+              mavlink_mission_current_t curr;
+              mavlink_msg_mission_current_decode(&msg, &curr);
+
+              //Serial.print("Current sequence: "); Serial.println(curr.seq);
+
+              if (curr.seq != 1) {
+                  orbit_completed = true;
+              }
+
+              if (desired_ID == MAVLINK_MSG_ID_MISSION_CURRENT) {
+                return true;
+              }
+            }
           default:
             break;
         }
@@ -729,10 +742,7 @@ bool comm_receive(uint8_t desired_ID) {
 }
 
 bool update_flight_mode() {
-  if (!comm_receive(MAVLINK_MSG_ID_HEARTBEAT)) {
-    //Serial.println("update_flight_mode() failed");
-    //failsafe(3);
-  }
+  comm_receive(MAVLINK_MSG_ID_HEARTBEAT);
 }
 
 void update_gps_pos() {
@@ -753,46 +763,7 @@ bool receive_ack() {
 
 void get_reached_item() {
   comm_receive(MAVLINK_MSG_ID_MISSION_ITEM_REACHED);
-}
-
-uint32_t get_time() {
-  request_data(MAV_DATA_STREAM_EXTENDED_STATUS);
-
-  mavlink_message_t msg;
-  mavlink_status_t status;
-
-  unsigned long curr_time = millis();
-  while (millis() - curr_time < 1500) {
-    while (Serial1.available() > 0) {
-      uint8_t c = Serial1.read();
-      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-        if (msg.msgid == MAVLINK_MSG_ID_SYSTEM_TIME) {
-          mavlink_system_time_t tim;
-          mavlink_msg_system_time_decode(&msg, &tim);
-
-          uint64_t t_unix = tim.time_unix_usec;
-
-          // REPLACE WITH CONVERSION TO READABLE TIME AND RETURN (CHANGE TYPE TO STRING?)
-          uint32_t low = t_unix % 0xFFFFFFFF;
-          uint32_t high = (t_unix >> 32) % 0xFFFFFFFF;
-
-          //Serial.print("readable time:");
-          //Serial.print(unix_convert(tim.time_unix_usec));
-          //Serial.print("SYSTEM_TIME time:");
-          //Serial.print(low);
-          //Serial.println(high);
-          //Serial.print("SYTEM_TIME since last boot:");
-          //Serial.println(tim.time_boot_ms);
-          //Serial.println();
-
-          return 1;
-          // END REPLACE
-        }
-      }
-    }
-  }
-  Serial.println("get_time() failed");
-  return 0; // failed
+  comm_receive(MAVLINK_MSG_ID_MISSION_CURRENT);
 }
 
 /*
@@ -922,59 +893,3 @@ void halt() {
   }
   Serial.println("continuing from halt");
 }
-
-/*
-void update_alt() {
-  request_data(MAV_DATA_STREAM_POSITION);
-
-  mavlink_message_t msg;
-  mavlink_status_t status;
-
-  unsigned long curr_time = millis();
-  while (millis() - curr_time < 1500) {
-    while (Serial1.available() > 0) {
-      uint8_t c = Serial1.read();
-      if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-        if (msg.msgid ==  141) { // = MAVLINK_MSG_ID_ALTITUDE
-          mavlink_altitude_t alt;
-          mavlink_msg_altitude_decode(&msg, &alt);
-
-          Serial.print("monotonoc alt: "); Serial.println(alt.altitude_monotonic);
-          Serial.print("altitude_amsl: "); Serial.println(alt.altitude_amsl);
-          Serial.print("altitude_local: "); Serial.println(alt.altitude_local);
-          Serial.print("altitude_relative: "); Serial.println(alt.altitude_relative);
-          Serial.print("altitude_terrain: "); Serial.println(alt.altitude_terrain);
-
-          curr_alt = alt.altitude_monotonic;
-
-          return;
-        }
-      }
-    }
-  }
-  Serial.println("update_alt() failed. entering failsafe");
-  failsafe(3);
-}
-*/
-
-/*
-  // converts unix time to a string representing the current time in ISO 8601
-  String unix_convert(uint64_t unix_time) {
-
-  uint64_t yr = 1970 + unix_time/31556926;
-  uint64_t yr_remainder = unix_time%31556926;
-  uint64_t mnth = 1 + yr_remainder/2629743;
-  uint64_t mnth_remainder = yr_remainder%2629743;
-  uint64_t dy = 1 + mnth_remainder/86400;
-  uint64_t dy_remainder = mnth_remainder%86400;
-  uint64_t hr = dy_remainder/3600;
-  uint64_t hr_remainder = dy_remainder%3600;
-  uint64_t mnt = hr_remainder/60;
-  uint64_t mnt_remainder = hr_remainder%60;
-  uint64_t sec = mnt_remainder/1;
-  return (uint32_t)yr + '-' + (uint32_t)mnth + '-' + (uint32_t)dy + 'T' + (uint32_t)hr + ':' + (uint32_t)mnt + ':' + (uint32_t)sec;
-
-
-  }
-*/
-
